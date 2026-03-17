@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MediaMaster Async</title>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body class="bg-slate-50 min-h-screen flex flex-col">
+    <div id="root" class="flex-grow"></div>
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        // アイコンコンポーネント
+        const Icon = ({ name, className = "" }) => {
+            useEffect(() => {
+                if (window.lucide) {
+                    window.lucide.createIcons();
+                }
+            }, [name]);
+            return <i data-lucide={name} className={className}></i>;
+        };
+
+        const TOOLS = [
+            { id: 'heic-jpg', title: 'HEIC → JPG', icon: 'image', color: 'bg-blue-500', description: 'iPhoneの写真を一般的な形式に変換' },
+            { id: 'm4a-mp3', title: 'M4A → MP3', icon: 'music', color: 'bg-purple-500', description: 'Apple録音データをMP3に変換' },
+            { id: 'mp4-mp3', title: '動画 → MP3', icon: 'volume-2', color: 'bg-orange-500', description: '動画から音声のみを抽出' },
+            { id: 'jpeg-pdf', title: '画像 → PDF', icon: 'file-text', color: 'bg-red-500', description: '複数の画像を1つのPDFに結合' },
+            { id: 'pdf-png', title: 'PDF → PNG', icon: 'files', color: 'bg-emerald-500', description: 'PDFの各ページを画像に変換' },
+            { id: 'youtube', title: 'YouTube 保存', icon: 'youtube', color: 'bg-rose-600', description: '動画・音声を最高画質で保存 (Colab経由)' },
+        ];
+
+        function App() {
+            const [selectedTool, setSelectedTool] = useState(null);
+            const [files, setFiles] = useState([]);
+            const [youtubeUrl, setYoutubeUrl] = useState("");
+            const [youtubeFormat, setYoutubeFormat] = useState('mp3');
+            const [status, setStatus] = useState('idle');
+            const [progress, setProgress] = useState(0);
+            const [lastLog, setLastLog] = useState("");
+            const [downloadUrl, setDownloadUrl] = useState(null);
+            const [error, setError] = useState(null);
+            const [isDragging, setIsDragging] = useState(false);
+
+            const pollInterval = useRef(null);
+
+            const handleFileChange = (e) => {
+                setFiles(Array.from(e.target.files));
+            };
+
+            // ドラッグ&ドロップハンドラ
+            const handleDragOver = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setIsDragging(true);
+            };
+
+            const handleDragLeave = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setIsDragging(false);
+            };
+
+            const handleDrop = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setIsDragging(false);
+                const dropped = Array.from(e.dataTransfer.files);
+                if (dropped.length > 0) {
+                    setFiles(dropped);
+                }
+            };
+
+            const startProcessing = async () => {
+                if (selectedTool.id === 'youtube' && !youtubeUrl) return;
+                if (selectedTool.id !== 'youtube' && files.length === 0) return;
+
+                setStatus('uploading');
+                setProgress(10);
+                setLastLog('サーバーにリクエストを送信中...');
+                setDownloadUrl(null);
+                setError(null);
+
+                const formData = new FormData();
+                formData.append('tool_id', selectedTool.id);
+                
+                if (selectedTool.id === 'youtube') {
+                    formData.append('url', youtubeUrl);
+                    formData.append('output_format', youtubeFormat);
+                } else {
+                    files.forEach(file => formData.append('files', file));
+                    formData.append('output_format', 'mp3');
+                }
+
+                try {
+                    const res = await fetch('/api/convert', { method: 'POST', body: formData });
+                    const data = await res.json();
+                    
+                    if (data.task_id) {
+                        startPolling(data.task_id);
+                    } else {
+                        throw new Error(data.error || "リクエストに失敗しました");
+                    }
+                } catch (err) {
+                    setStatus('failed');
+                    setError(err.message || '通信エラーが発生しました');
+                    setLastLog("処理に失敗しました");
+                }
+            };
+
+            const startPolling = (tid) => {
+                if (pollInterval.current) clearInterval(pollInterval.current);
+                pollInterval.current = setInterval(async () => {
+                    try {
+                        const res = await fetch(`/api/status/${tid}`);
+                        const data = await res.json();
+                        
+                        setStatus(data.status);
+                        setProgress(data.progress || 0);
+                        setLastLog(data.last_log || data.error || "");
+
+                        if (data.status === 'completed') {
+                            clearInterval(pollInterval.current);
+                            setDownloadUrl(`/api/download/${tid}`);
+                        } else if (data.status === 'failed') {
+                            clearInterval(pollInterval.current);
+                            setError(data.error || '不明なエラーが発生しました');
+                        }
+                    } catch (err) {
+                        console.error('Polling error:', err);
+                    }
+                }, 2000);
+            };
+
+            const reset = () => {
+                if (pollInterval.current) clearInterval(pollInterval.current);
+                setSelectedTool(null);
+                setFiles([]);
+                setYoutubeUrl("");
+                setYoutubeFormat('mp3');
+                setStatus('idle');
+                setProgress(0);
+                setLastLog("");
+                setDownloadUrl(null);
+                setError(null);
+                setIsDragging(false);
+            };
+
+            const backToInput = () => {
+                if (pollInterval.current) clearInterval(pollInterval.current);
+                setStatus('idle');
+                setProgress(0);
+                setLastLog("");
+                setDownloadUrl(null);
+                setError(null);
+            };
+
+            return (
+                <div className="flex flex-col min-h-screen">
+                    <div className="max-w-4xl mx-auto px-4 py-12 flex-grow w-full">
+                        {/* Header */}
+                        <div className="text-center mb-12">
+                            <div className="inline-block p-3 bg-indigo-600 rounded-2xl mb-4 shadow-lg shadow-indigo-200">
+                                <Icon name="zap" className="text-white w-8 h-8" />
+                            </div>
+                            <h1 className="text-4xl font-black text-slate-900 mb-2 tracking-tight">MediaMaster Async</h1>
+                            <p className="text-slate-500 font-medium">高速・非同期メディア変換ツール</p>
+                        </div>
+
+                        {!selectedTool ? (
+                            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                                {TOOLS.map(tool => (
+                                    <button
+                                        key={tool.id}
+                                        onClick={() => setSelectedTool(tool)}
+                                        className="group p-6 bg-white rounded-3xl shadow-sm hover:shadow-xl transition-all duration-300 text-left border border-slate-100 hover:border-indigo-200 hover:-translate-y-1"
+                                    >
+                                        <div className={`inline-flex p-3 ${tool.color} rounded-2xl mb-4 shadow-lg`}>
+                                            <Icon name={tool.icon} className="w-6 h-6 text-white" />
+                                        </div>
+                                        <p className="font-black text-slate-900 mb-1">{tool.title}</p>
+                                        <p className="text-xs text-slate-400 font-medium leading-relaxed">{tool.description}</p>
+                                    </button>
+                                ))}
+                            </div>
+                        ) : (
+                            <div className="max-w-lg mx-auto">
+                                <div className="bg-white rounded-3xl shadow-sm border border-slate-100 overflow-hidden">
+                                    {/* Tool Header */}
+                                    <div className={`${selectedTool.color} p-6`}>
+                                        <button onClick={reset} className="flex items-center gap-2 text-white/80 hover:text-white mb-4 text-sm font-bold transition-colors">
+                                            <Icon name="arrow-left" className="w-4 h-4" />
+                                            ツール選択に戻る
+                                        </button>
+                                        <div className="flex items-center gap-3">
+                                            <Icon name={selectedTool.icon} className="w-8 h-8 text-white" />
+                                            <div>
+                                                <h2 className="text-xl font-black text-white">{selectedTool.title}</h2>
+                                                <p className="text-white/70 text-sm font-medium">{selectedTool.description}</p>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Content */}
+                                    <div className="p-6 space-y-4">
+                                        {status === 'idle' || status === 'uploading' ? (
+                                            <>
+                                                {selectedTool.id === 'youtube' ? (
+                                                    <div className="space-y-4">
+                                                        <div>
+                                                            <label className="block text-sm font-bold text-slate-600 mb-2">YouTube URL（複数行入力可）</label>
+                                                            <textarea
+                                                                placeholder="https://www.youtube.com/watch?v=..."
+                                                                className="w-full h-32 p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-indigo-500 focus:outline-none transition-all font-mono text-sm"
+                                                                value={youtubeUrl}
+                                                                onChange={(e) => setYoutubeUrl(e.target.value)}
+                                                            />
+                                                        </div>
+                                                        <div className="flex gap-4 p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                                                            <span className="text-sm font-bold text-slate-500 flex items-center">保存形式:</span>
+                                                            <label className="flex items-center gap-2 cursor-pointer group">
+                                                                <input 
+                                                                    type="radio" 
+                                                                    name="format" 
+                                                                    value="mp3" 
+                                                                    checked={youtubeFormat === 'mp3'} 
+                                                                    onChange={(e) => setYoutubeFormat(e.target.value)}
+                                                                    className="w-4 h-4 accent-indigo-600"
+                                                                />
+                                                                <span className={`text-sm font-bold ${youtubeFormat === 'mp3' ? 'text-indigo-600' : 'text-slate-400'}`}>MP3 (音声)</span>
+                                                            </label>
+                                                            <label className="flex items-center gap-2 cursor-pointer group">
+                                                                <input 
+                                                                    type="radio" 
+                                                                    name="format" 
+                                                                    value="mp4" 
+                                                                    checked={youtubeFormat === 'mp4'} 
+                                                                    onChange={(e) => setYoutubeFormat(e.target.value)}
+                                                                    className="w-4 h-4 accent-indigo-600"
+                                                                />
+                                                                <span className={`text-sm font-bold ${youtubeFormat === 'mp4' ? 'text-indigo-600' : 'text-slate-400'}`}>MP4 (動画)</span>
+                                                            </label>
+                                                        </div>
+                                                    </div>
+                                                ) : (
+                                                    <div
+                                                        className={`border-2 border-dashed rounded-3xl p-12 text-center transition-all ${
+                                                            isDragging
+                                                                ? 'border-indigo-500 bg-indigo-50'
+                                                                : 'border-slate-200 bg-slate-50 hover:border-indigo-400'
+                                                        }`}
+                                                        onDragOver={handleDragOver}
+                                                        onDragLeave={handleDragLeave}
+                                                        onDrop={handleDrop}
+                                                    >
+                                                        <input 
+                                                            type="file" 
+                                                            multiple 
+                                                            className="hidden" 
+                                                            id="fileInput"
+                                                            onChange={handleFileChange}
+                                                        />
+                                                        <label htmlFor="fileInput" className="cursor-pointer block">
+                                                            <Icon name="upload-cloud" className={`w-12 h-12 mx-auto mb-4 transition-colors ${isDragging ? 'text-indigo-500' : 'text-slate-300'}`} />
+                                                            <p className="text-slate-600 font-bold mb-1">
+                                                                {files.length > 0
+                                                                    ? `${files.length}個のファイルを選択中`
+                                                                    : isDragging
+                                                                        ? 'ここにドロップ'
+                                                                        : 'ファイルをドラッグ＆ドロップ'}
+                                                            </p>
+                                                            <p className="text-slate-400 text-sm font-medium">またはクリックしてファイルを選択</p>
+                                                        </label>
+                                                    </div>
+                                                )}
+
+                                                <button 
+                                                    onClick={startProcessing} 
+                                                    disabled={status !== 'idle' || (selectedTool.id === 'youtube' ? !youtubeUrl : files.length === 0)}
+                                                    className="w-full bg-slate-900 text-white py-4 rounded-2xl font-bold hover:bg-indigo-600 disabled:bg-slate-200 transition-all shadow-lg active:scale-[0.98]"
+                                                >
+                                                    処理開始
+                                                </button>
+                                            </>
+                                        ) : (
+                                            <div className="space-y-6 animate-in slide-in-from-bottom-2 duration-300">
+                                                <div className="bg-slate-50 rounded-2xl p-6 border border-slate-100">
+                                                    <div className="flex justify-between text-sm font-bold mb-3">
+                                                        <span className={status === 'failed' ? 'text-rose-600' : 'text-indigo-600'}>
+                                                            {status === 'completed' ? '完了しました' : lastLog}
+                                                        </span>
+                                                        <span className="text-slate-400">{progress}%</span>
+                                                    </div>
+                                                    <div className="w-full bg-slate-200 rounded-full h-3 overflow-hidden">
+                                                        <div 
+                                                            className={`h-full transition-all duration-500 shadow-lg ${status === 'failed' ? 'bg-rose-500' : 'bg-indigo-600'}`}
+                                                            style={{ width: `${progress}%` }}
+                                                        ></div>
+                                                    </div>
+                                                </div>
+
+                                                {error && (
+                                                    <div className="p-4 bg-rose-50 border border-rose-100 rounded-2xl text-rose-600 font-bold text-center text-sm">
+                                                        {error}
+                                                    </div>
+                                                )}
+
+                                                <div className="flex gap-4">
+                                                    <button 
+                                                        onClick={backToInput} 
+                                                        className="flex-1 bg-slate-100 text-slate-600 py-4 rounded-2xl font-bold hover:bg-slate-200 transition-all"
+                                                    >
+                                                        入力に戻る
+                                                    </button>
+                                                    {downloadUrl && (
+                                                        <a 
+                                                            href={downloadUrl} 
+                                                            className="flex-1 bg-emerald-500 text-white py-4 rounded-2xl font-bold text-center hover:bg-emerald-600 animate-pulse shadow-lg flex items-center justify-center gap-2"
+                                                        >
+                                                            <Icon name="download" className="w-5 h-5" />
+                                                            ダウンロード
+                                                        </a>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Footer */}
+                    <footer className="py-8 text-center border-t border-slate-100">
+                        <div className="flex items-center justify-center gap-2 text-slate-400 text-sm font-medium">
+                            <span>© {new Date().getFullYear()}</span>
+                            <span className="text-slate-900 font-black tracking-tight">HatakeyamaTechnology</span>
+                            <span className="hidden sm:inline">|</span>
+                            <span className="hidden sm:inline">All Rights Reserved.</span>
+                        </div>
+                    </footer>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
