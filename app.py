@@ -1,6 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks, Body
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.background import BackgroundTask
 from typing import List, Optional
 import os
 import shutil
@@ -8,14 +9,15 @@ import uuid
 import pathlib
 import asyncio
 
-from routers import download_router
 from tools import (
     BASE_TEMP_DIR,
     cleanup_loop,
+    create_download_zip,
     ensure_download_dir,
     get_colab_url,
     init_base_dirs,
     init_db,
+    list_downloadable_files,
     process_task,
     set_colab_url,
     tasks,
@@ -23,7 +25,6 @@ from tools import (
 
 SECRET_TOKEN = os.environ.get("SECRET_TOKEN", "")
 app = FastAPI()
-app.include_router(download_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -35,6 +36,11 @@ app.add_middleware(
 init_base_dirs()
 init_db()
 ensure_download_dir()
+
+
+def _safe_remove(path: str) -> None:
+    if os.path.exists(path):
+        os.remove(path)
 
 
 @app.on_event("startup")
@@ -60,6 +66,27 @@ async def health_check():
 async def get_config():
     url = get_colab_url()
     return {"youtube_enabled": url != "", "colab_url": url}
+
+
+@app.get("/api/download-files")
+async def get_downloadable_files():
+    return {"files": list_downloadable_files()}
+
+
+@app.post("/api/download-files")
+async def download_selected_files(payload: dict = Body(...)):
+    selected_files = payload.get("files", [])
+    try:
+        zip_path = create_download_zip(selected_files)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return FileResponse(
+        zip_path,
+        filename="selected_files.zip",
+        media_type="application/zip",
+        background=BackgroundTask(_safe_remove, zip_path),
+    )
 
 
 @app.post("/api/update_colab_url")
