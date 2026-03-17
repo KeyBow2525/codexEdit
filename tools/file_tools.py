@@ -1,4 +1,3 @@
-import os
 import pathlib
 import uuid
 import zipfile
@@ -15,7 +14,7 @@ def list_downloadable_files() -> List[str]:
     ensure_download_dir()
     files = []
     for item in DOWNLOAD_FILES_DIR.iterdir():
-        if item.is_file() and not item.name.startswith('.'):
+        if item.is_file() and not item.name.startswith("."):
             files.append(item.name)
     return sorted(files)
 
@@ -25,12 +24,15 @@ def validate_selected_files(selected_files: List[str]) -> List[pathlib.Path]:
         raise ValueError("ダウンロードするファイルを1つ以上選択してください。")
 
     available = {name: DOWNLOAD_FILES_DIR / name for name in list_downloadable_files()}
-    resolved = []
+    resolved: List[pathlib.Path] = []
 
-    for name in selected_files:
-        if name not in available:
-            raise ValueError(f"指定されたファイルは存在しません: {name}")
-        resolved.append(available[name])
+    for raw_name in selected_files:
+        safe_name = pathlib.Path(raw_name).name
+        if safe_name != raw_name:
+            raise ValueError(f"不正なファイル名です: {raw_name}")
+        if safe_name not in available:
+            raise ValueError(f"指定されたファイルは存在しません: {safe_name}")
+        resolved.append(available[safe_name])
 
     return resolved
 

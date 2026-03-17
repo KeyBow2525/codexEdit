@@ -26,6 +26,7 @@ from tools import (
 SECRET_TOKEN = os.environ.get("SECRET_TOKEN", "")
 app = FastAPI()
 
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -36,6 +37,11 @@ app.add_middleware(
 init_base_dirs()
 init_db()
 ensure_download_dir()
+
+
+def _safe_remove(path: str) -> None:
+    if os.path.exists(path):
+        os.remove(path)
 
 
 @app.on_event("startup")
@@ -80,7 +86,7 @@ async def download_selected_files(payload: dict = Body(...)):
         zip_path,
         filename="selected_files.zip",
         media_type="application/zip",
-        background=BackgroundTask(lambda p: os.path.exists(p) and os.remove(p), zip_path),
+        background=BackgroundTask(_safe_remove, zip_path),
     )
 
 
